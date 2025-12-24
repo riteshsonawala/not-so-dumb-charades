@@ -1,8 +1,7 @@
 import streamlit as st
-import requests
-import os
-
-API_URL = os.getenv("API_URL", "http://localhost:8000")
+import random
+import json
+from pathlib import Path
 
 st.set_page_config(
     page_title="Not So Dumb Charades",
@@ -10,6 +9,53 @@ st.set_page_config(
     layout="centered"
 )
 
+# Load movies directly (no separate API needed)
+@st.cache_data
+def load_movies():
+    db_path = Path(__file__).parent / "database" / "movies.json"
+    with open(db_path, "r") as f:
+        data = json.load(f)
+    return data["movies"]
+
+def get_random_movie(movies, filters, exclude_ids):
+    filtered = movies
+
+    # Filter by industry
+    if filters.get("industry") and filters["industry"] != "I Don't Care":
+        industry = filters["industry"].lower()
+        filtered = [m for m in filtered if m["industry"] == industry]
+
+    # Filter by difficulty
+    if filters.get("difficulty"):
+        difficulty = filters["difficulty"].lower()
+        if difficulty == "easy":
+            # Easy: Recent movies with simple titles
+            filtered = [m for m in filtered if m["year"] >= 2010 and m.get("title_complexity", "simple") == "simple"]
+        else:
+            # Difficult: Older movies OR complex titles
+            filtered = [m for m in filtered if m["year"] < 2010 or m.get("title_complexity", "simple") == "complex"]
+
+    # Filter by decade
+    if filters.get("decade") and filters["decade"] != "Any":
+        decade = filters["decade"]
+        filtered = [m for m in filtered if m["decade"] == decade]
+
+    # Exclude already shown movies
+    if exclude_ids:
+        filtered = [m for m in filtered if m["id"] not in exclude_ids]
+
+    if not filtered:
+        return None
+
+    # When difficulty is "difficult", give 3x weight to complex titles
+    if filters.get("difficulty", "").lower() == "difficult":
+        weights = [3 if m.get("title_complexity", "simple") == "complex" else 1 for m in filtered]
+        return random.choices(filtered, weights=weights, k=1)[0]
+
+    return random.choice(filtered)
+
+
+# Initialize session state
 if "game_started" not in st.session_state:
     st.session_state.game_started = False
 if "current_movie" not in st.session_state:
@@ -23,32 +69,12 @@ if "filters" not in st.session_state:
 if "show_history" not in st.session_state:
     st.session_state.show_history = False
 
+# Load movies once
+movies = load_movies()
+
 
 def fetch_random_movie():
-    params = {}
-    filters = st.session_state.filters
-
-    if filters.get("industry") and filters["industry"] != "I Don't Care":
-        params["industry"] = filters["industry"].lower()
-
-    if filters.get("difficulty"):
-        params["difficulty"] = filters["difficulty"].lower()
-
-    if filters.get("decade") and filters["decade"] != "Any":
-        params["decade"] = filters["decade"]
-
-    if st.session_state.shown_ids:
-        params["exclude"] = ",".join(map(str, st.session_state.shown_ids))
-
-    try:
-        response = requests.get(f"{API_URL}/api/movies/random", params=params, timeout=5)
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 404:
-            return None
-    except requests.exceptions.RequestException:
-        st.error("Could not connect to API. Make sure the backend is running.")
-        return None
+    return get_random_movie(movies, st.session_state.filters, st.session_state.shown_ids)
 
 
 def start_game():
@@ -101,7 +127,7 @@ if not st.session_state.game_started:
         difficulty = st.selectbox(
             "Select Difficulty",
             ["Easy", "Difficult"],
-            help="Easy = 2010-2024, Difficult = 1960-2009"
+            help="Easy = Recent simple titles, Difficult = Older or complex titles"
         )
 
     with col2:
